@@ -1,17 +1,31 @@
 import taichi as ti
 
-ti.init(arch=ti.vulkan)
+ti.init(arch=ti.cuda)
 
 #### DEFINE TYPES
 
 # define a type
 vec3 = ti.types.vector(3, float)
-# dataclass to hold spheres
+
 @ti.dataclass
 class Sphere:
     center: vec3
     radius: ti.f32
     color: vec3
+    specular: ti.int32
+
+@ti.dataclass
+class Light:
+    # enum
+    kind: ti.int32
+    intensity: ti.f32
+    position: vec3
+    direction: vec3
+
+# convention for 'kind' enum
+# 0 : ambient
+# 1 : point
+# 2 : directional
 
 ### END TYPE DEFINITIONS 
 
@@ -34,15 +48,23 @@ Cw = image_res[0]
 Ch = image_res[1]
 
 
-
-
-
 # using coordinate system from https://www.gabrielgambetta.com/computer-graphics-from-scratch/01-common-concepts.html
 @ti.func
 def put_pixel(x,y,color):
     canvas_x = Cw/2 + x
     canvas_y = Ch/2 - y
-    img[int(canvas_x), int(canvas_y)] = color
+    img[int(canvas_x), int(canvas_y)] = clamp(color)
+
+
+# POSSIVEL PERDA DE PERFORMANCE
+@ti.func
+def clamp(color):
+  return vec3(ti.min(255, ti.max(0, color[0])),
+      ti.min(255, ti.max(0, color[1])),
+      ti.min(255, ti.max(0, color[2])))
+
+
+
 
 @ti.func
 def canvas_to_viewport(x,y):
@@ -55,6 +77,29 @@ def randomize_canvas():
     for x in range(-Cw/2,Cw/2):
         for y in range(-Ch/2,Cw/2):
             put_pixel(x,y,(ti.random(ti.f32),ti.random(ti.f32),ti.random(ti.f32)))
+
+@ti.func
+def compute_lighting(P, N):
+    i = 0.0
+    L = vec3(0,0,0)
+    # convention for 'kind' enum
+    # 0 : ambient
+    # 1 : point
+    # 2 : directional
+    for j in range(n_lights):
+        kind = lights[j].kind
+        if kind==0:
+            i+= lights[j].intensity
+        else:
+            if kind==1:
+                L = lights[j].position - P  
+            else:
+                L = lights[j].direction
+            n_dot_l = N.dot(L)
+            if n_dot_l > 0:
+                i += lights[j].intensity * n_dot_l/(N.norm() * L.norm())
+    return i
+
 
 @ti.func
 def intersect_ray_sphere(O, D, sphere):
@@ -71,7 +116,7 @@ def intersect_ray_sphere(O, D, sphere):
     discriminant = b*b - 4*a*c
 
     if discriminant < 0:
-        t1, t2 =  INFINITY, INFINITY
+        t1, t2 = INFINITY, INFINITY
     else:
         sqrd = ti.sqrt(discriminant)
 
@@ -103,8 +148,10 @@ def trace_ray(O, D, t_min, t_max):
     if closest_sphere.radius==-1:
         color = BACKGROUND_COLOR
     else:
-        color = closest_sphere.color
-
+        P = O + closest_t * D 
+        N = P - closest_sphere.center
+        N = N.normalized()
+        color = closest_sphere.color * compute_lighting(P, N)
     return color
 
 # define scene 
@@ -125,9 +172,31 @@ scene[2].radius = 1
 scene[2].center = vec3(-2, 0, 4)
 scene[2].color = vec3(0, 255,0) 
 
+# define lighting 
+
+n_lights = 3
+
+lights = Light.field(shape=(n_lights,))
+# fill lights
+
+lights[0].kind = 0
+lights[0].intensity = 0.2
+
+lights[1].kind = 1
+lights[1].intensity = 0.6
+lights[1].position = vec3(2, 1, 0)
+
+lights[2].kind = 2
+lights[2].intensity = 0.2
+lights[1].direction = vec3(1, 4, 4)
+
+
 # origin of coordinate system
 O = vec3(0,0,0)
 BACKGROUND_COLOR = vec3(0,0,0)
+
+
+## MAIN DRAW LOOP
 @ti.kernel
 def draw():
     # using coordinate system from https://www.gabrielgambetta.com/computer-graphics-from-scratch/01-common-concepts.html
@@ -137,8 +206,14 @@ def draw():
             color = trace_ray(O, D, 1, INFINITY)
             put_pixel(x,y,color)
 
+DEBUG = False 
 
-while window.running:
+if (not DEBUG):
+    while window.running:
+        window.show()
+        draw()
+        canvas.set_image(img)
+else:
     window.show()
     draw()
     canvas.set_image(img)

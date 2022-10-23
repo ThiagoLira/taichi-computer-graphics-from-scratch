@@ -1,6 +1,6 @@
 import taichi as ti
 
-ti.init(arch=ti.vulkan)
+ti.init(arch=ti.cuda)
 
 # DEFINE TYPES
 
@@ -15,6 +15,7 @@ class Sphere:
     radius: ti.f32
     color: vec3
     specular: ti.int32
+    reflective: float
 
 
 @ti.dataclass
@@ -106,9 +107,7 @@ def compute_lighting(P: vec3, N: vec3, V: vec3, s: int):
 
             # shadow check
             shadow_sphere, _ = closest_intersection(P, L, 0.001, t_max)
-            print(P, L, shadow_sphere.radius)
             if shadow_sphere.radius != -1:
-                print('ohaio')
                 continue
 
             # diffuse light
@@ -171,7 +170,15 @@ def closest_intersection(Or: vec3, D: vec3, t_min: float, t_max: float):
 
 
 @ti.func
+def reflect_ray(R, N):
+    return 2.0 * N * N.dot(R) - R
+
+@ti.func
 def trace_ray(Or: vec3, D: vec3, t_min: float, t_max: float):
+    P = vec3(0.0, 0.0, 0.0)
+    L = vec3(0.0, 0.0, 0.0)
+    N = vec3(0.0, 0.0, 0.0)
+
     color = vec3(0.0, 0.0, 0.0)
     closest_sphere, closest_t = closest_intersection(Or, D, t_min, t_max)
     # TENTAR CHECAR SE É STRUCT VAZIO DEPOIS
@@ -182,9 +189,23 @@ def trace_ray(Or: vec3, D: vec3, t_min: float, t_max: float):
         N = P - closest_sphere.center
         N = N.normalized()
         color = closest_sphere.color * compute_lighting(P, N, -D, closest_sphere.specular)
-    return color
 
+    
+    return color, closest_sphere, P, D, N
 
+# handle reflection
+@ti.func
+def trace_rays(Or: vec3, D: vec3, t_min: float, t_max: float, N_REFLECTIONS):
+        color, closest_sphere, P, D, N = trace_ray(Or, D, t_min, t_max)
+        r = closest_sphere.reflective
+        while N_REFLECTIONS > 0 and r>0:
+            R = reflect_ray(-D, N)
+            color_r, closest_sphere, P, D, N = trace_ray(P, R, 0.0001, INFINITY)
+            color = color * (1.0 - r) + color_r * r
+                
+            N_REFLECTIONS-=1
+            r = closest_sphere.reflective
+        return color
 # define scene
 n_balls = 4
 
@@ -195,21 +216,26 @@ scene[0].radius = 1
 scene[0].center = vec3(0, -1, 3)
 scene[0].color = vec3(1.0, 0, 0)
 scene[0].specular = 500
+scene[0].reflective  = 0.2
 
 scene[1].radius = 1
 scene[1].center = vec3(2, 0, 4)
 scene[1].color = vec3(0, 0, 1.0)
 scene[1].specular = 500
+scene[1].reflective  = 0.3
 
 scene[2].radius = 1
 scene[2].center = vec3(-2, 0, 4)
 scene[2].color = vec3(0, 1.0, 0)
 scene[2].specular = 10
+scene[2].reflective  = 0.4
 
-scene[3].radius = 5000
+scene[3].radius = 1
 scene[3].center = vec3(0, -5001, 0)
 scene[3].color = vec3(1.0, 1.0, 0)
-scene[4].specular = 1000
+scene[3].specular = 1000
+scene[3].reflective  = 0.5
+
 
 # define lighting
 
@@ -227,14 +253,14 @@ lights[1].position = vec3(2.0, 1.0, 0.0)
 lights[1].direction = vec3(1.0, 4.0, 4.0)
 
 lights[2].kind = 2
-lights[2].intensity = 0.2
+lights[2].intensity = 0.4
 lights[2].direction = vec3(1.0, 4.0, 4.0)
 
 
 # origin of coordinate system
-O = vec3(0, 0, 0)
-BACKGROUND_COLOR = vec3(1, 1, 1)
-
+O = vec3(0.0, 0.0, 0.0)
+BACKGROUND_COLOR = vec3(0.0, 0.0, 0.0)
+N_REFLECTIONS = 3
 
 # MAIN DRAW LOOP
 @ti.kernel
@@ -243,7 +269,7 @@ def draw():
     for x in range(-Cw/2, Cw/2):
         for y in range(-Ch/2, Cw/2):
             D = canvas_to_viewport(x, y)
-            color = trace_ray(O, D, 1, INFINITY)
+            color = trace_rays(O, D, 1.0, INFINITY, N_REFLECTIONS)
             put_pixel(x, y, color)
 
 
@@ -254,6 +280,8 @@ if (not DEBUG):
         window.show()
         draw()
         canvas.set_image(img)
+        scene[2].center[0] += .001
+        scene[0].center[2] += .001
 else:
     window.show()
     draw()
